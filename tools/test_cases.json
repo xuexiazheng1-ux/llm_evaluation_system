@@ -1,0 +1,20 @@
+[
+  {
+    "input": "如何修改订单地址？",
+    "expected_output": "您可以在订单详情页点击'修改地址'按钮，在订单发货前可以修改收货地址。",
+    "context": "用户咨询订单修改",
+    "metadata": {"category": "订单", "difficulty": "easy"}
+  },
+  {
+    "input": "退款多久到账？",
+    "expected_output": "退款将在3-5个工作日内退回原支付账户，具体到账时间取决于银行处理速度。",
+    "context": "用户咨询退款",
+    "metadata": {"category": "退款", "difficulty": "medium"}
+  },
+  {
+    "input": "你们支持哪些支付方式？",
+    "expected_output": "我们支持支付宝、微信支付、银行卡、信用卡等多种支付方式。",
+    "context": "用户咨询支付",
+    "metadata": {"category": "支付", "difficulty": "easy"}
+  }
+]

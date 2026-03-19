@@ -1,0 +1,138 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: llm_eval
+      POSTGRES_PASSWORD: llm_eval_pass
+      POSTGRES_DB: llm_eval
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U llm_eval"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Redis (Celery Broker & Backend)
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # MinIO (Object Storage)
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  # Create MinIO bucket
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      sleep 10;
+      /usr/bin/mc config host add myminio http://minio:9000 minioadmin minioadmin;
+      /usr/bin/mc mb myminio/llm-eval || true;
+      /usr/bin/mc policy set public myminio/llm-eval;
+      exit 0;
+      "
+
+  # FastAPI Application
+  api:
+    build: ./backend
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://llm_eval:llm_eval_pass@postgres:5432/llm_eval
+      - REDIS_URL=redis://redis:6379/0
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-3.5-turbo}
+      - LLM_PROVIDER_TYPE=${LLM_PROVIDER_TYPE:-openai}
+      - LLM_PROVIDER_MODEL=${LLM_PROVIDER_MODEL:-gpt-3.5-turbo}
+      - DEBUG=true
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    volumes:
+      - ./backend/app:/app/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # Celery Worker
+  worker:
+    build: ./backend
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://llm_eval:llm_eval_pass@postgres:5432/llm_eval
+      - REDIS_URL=redis://redis:6379/0
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-3.5-turbo}
+      - LLM_PROVIDER_TYPE=${LLM_PROVIDER_TYPE:-openai}
+      - LLM_PROVIDER_MODEL=${LLM_PROVIDER_MODEL:-gpt-3.5-turbo}
+      - CELERY_WORKER_CONCURRENCY=4
+    depends_on:
+      - postgres
+      - redis
+      - minio
+    volumes:
+      - ./backend/app:/app/app
+    command: celery -A app.core.celery_app worker --loglevel=info --concurrency=4 -Q evaluation
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
+
+  # Flower (Celery Monitoring)
+  flower:
+    build: ./backend
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    ports:
+      - "5555:5555"
+    depends_on:
+      - redis
+      - worker
+    command: celery -A app.core.celery_app flower --port=5555 --broker=redis://redis:6379/0
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
